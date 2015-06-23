@@ -38,6 +38,19 @@ end
 EOS
     RELEASE_SCRIPT_HASH = Digest::SHA1.hexdigest(RELEASE_SCRIPT)
 
+    ACQUIRE_REENTRANT_SCRIPT = <<EOS
+if redis.call("GET", KEYS[1]) == ARGV[1]
+then
+  return "OK"
+elseif redis.call("EXISTS", KEYS[1]) == 1
+then
+  return false
+else
+  return redis.call("SET", KEYS[1], ARGV[1], "PX", tonumber(ARGV[2]))
+end
+EOS
+    ACQUIRE_REENTRANT_SCRIPT_HASH = Digest::SHA1.hexdigest(ACQUIRE_REENTRANT_SCRIPT)
+
     EXTEND_SCRIPT = <<EOS
 if redis.call("GET", KEYS[1]) == ARGV[1]
 then
@@ -57,7 +70,8 @@ EOS
       check_keys( options, :owner, :life, :sleep )
       @redis  = redis
       @key    = "lock:#{key}"
-      @owner  = options[:owner] || "#{HOST}:#{Process.pid}"
+      Thread.current['Redis::Lock::OWNER'] ||= "#{HOST}:#{Process.pid}:#{SecureRandom.hex(5)}"
+      @owner  = options[:owner] || Thread.current['Redis::Lock::OWNER']
       @life   = options[:life] || @@config.default_life
       @sleep_in_ms = options[:sleep] || @@config.default_sleep
     end
@@ -106,7 +120,12 @@ EOS
 
     # @returns true if locked, false otherwise
     def do_lock
-      !!redis.set(key, owner, nx: true, px: (life * 1000).to_i)
+      begin
+        redis.evalsha(
+          ACQUIRE_REENTRANT_SCRIPT_HASH, keys: [key], argv: [owner, (life * 1000).to_i])
+      rescue Redis::CommandError => e
+        redis.eval(ACQUIRE_REENTRANT_SCRIPT, keys: [key], argv: [owner, (life * 1000).to_i])
+      end
     end
 
     def do_extend( new_life, my_owner = owner )

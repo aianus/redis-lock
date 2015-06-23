@@ -55,9 +55,9 @@ describe Redis::Lock, redis: true do
     end
   end
 
-  it "does not support nesting" do
+  it "supports nesting (is reentrant)" do
     hers.lock do
-      expect { her_same.lock }.to raise_exception
+      expect { her_same.lock }.not_to raise_exception
     end
   end
 
